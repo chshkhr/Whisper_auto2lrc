@@ -124,24 +124,12 @@ class Worker(QThread):
     def run(self):
         try:
             # --- Load Whisper Model ---
-            # Consider moving model loading outside if you want to cache it
-            # across multiple runs within the same app session.
-            # Loading here ensures it uses the selected model for this run.
             self.progress.emit(f"Loading Whisper model: {self.model_name}...", 0)
             QApplication.processEvents() # Allow GUI to update
             try:
-                # Check cache first (example of simple caching)
-                # if self.model_name in WHISPER_MODEL_CACHE:
-                #     self.whisper_model = WHISPER_MODEL_CACHE[self.model_name]
-                # else:
-                #     self.whisper_model = whisper.load_model(self.model_name)
-                #     WHISPER_MODEL_CACHE[self.model_name] = self.whisper_model
-                # Simpler: Load every time worker runs
                 self.whisper_model = whisper.load_model(self.model_name)
-
             except Exception as model_load_error:
                 self.error_occurred.emit(f"Failed to load Whisper model '{self.model_name}': {model_load_error}")
-                # Try to unload partially loaded model? Might not be possible/easy.
                 self.whisper_model = None
                 return # Cannot continue without a model
             self.progress.emit(f"Model '{self.model_name}' loaded.", 0)
@@ -150,24 +138,53 @@ class Worker(QThread):
             # --- Create Temp Directory ---
             self.temp_dir_path.mkdir(parents=True, exist_ok=True)
 
-            # --- Find Audio Files ---
-            audio_files = [
+            # --- Find *All* Potential Audio Files ---
+            # First, find all files matching the criteria without considering duplicates yet.
+            all_potential_audio_files = [
                 f for f in self.folder_path.rglob('*')
-                if f.suffix.lower() in AUDIO_EXTENSIONS and not f.with_suffix('.lrc').exists()
+                if f.is_file() # Ensure it's a file
+                   and f.suffix.lower() in AUDIO_EXTENSIONS
+                   and not f.with_suffix('.lrc').exists()
             ]
 
-            total_files = len(audio_files)
+            # --- Filter for Unique Base Names (Stems) ---
+            # If multiple files have the same name but different allowed extensions
+            # (e.g., song.mp3, song.m4a), process only the *first one* encountered by rglob.
+            processed_stems = set()
+            audio_files_to_process = [] # This will be the final list to process
+            skipped_files_log = [] # Optional: keep track of skipped files for logging
+
+            for audio_file in all_potential_audio_files:
+                stem = audio_file.stem # The filename without the extension
+                if stem not in processed_stems:
+                    processed_stems.add(stem)
+                    audio_files_to_process.append(audio_file)
+                else:
+                    # Optional: Log which files are being skipped due to duplicates
+                    skipped_files_log.append(f"Skipping {audio_file.name} (duplicate stem '{stem}')")
+
+
+            # --- Log Skipped Files (Optional) ---
+            # if skipped_files_log:
+            #    self.progress.emit("Skipped the following files due to duplicate base names:", 0)
+            #    for skipped_msg in skipped_files_log:
+            #         self.progress.emit(f"- {skipped_msg}", 0) # Use progress signal for logging in this context
+
+            # --- Continue with the Filtered List ---
+            total_files = len(audio_files_to_process)
+
             if total_files == 0:
-                self.progress.emit("No new audio files found to process.", 0)
+                self.progress.emit("No new, unique audio files found to process.", 0)
                 try: # Clean up empty temp dir
                     if not any(self.temp_dir_path.iterdir()): self.temp_dir_path.rmdir()
                 except OSError: pass
                 return
 
-            self.progress.emit(f"Found {total_files} files to process...", 0)
+            self.progress.emit(f"Found {total_files} unique files to process...", 0)
 
             # --- Process Files ---
-            for idx, audio_file in enumerate(audio_files):
+            # Now iterate over the filtered list 'audio_files_to_process'
+            for idx, audio_file in enumerate(audio_files_to_process):
                 if not self._is_running:
                     self.progress.emit("Processing cancelled.", int((idx / total_files) * 100))
                     break
@@ -242,11 +259,9 @@ class Worker(QThread):
                 except Exception as clean_err:
                      self.error_occurred.emit(f"Warning: Failed to delete temp directory {self.temp_dir_path}: {clean_err}")
             # --- Unload model (optional, frees memory) ---
-            # If you want to free VRAM/RAM after processing:
             # del self.whisper_model
             # self.whisper_model = None
-            # import gc; gc.collect() # Try to force garbage collection
-            # Note: CUDA memory might need more specific handling if using GPU
+            # import gc; gc.collect()
 
             if self._is_running:
                 self.finished_signal.emit()
@@ -281,7 +296,7 @@ class App(QWidget):
         form_layout = QFormLayout()
         self.folder_path_edit = QLineEdit()
         self.folder_path_edit.setPlaceholderText("Select folder containing audio files")
-        self.folder_path_edit.setText("F:/ai-gen/riffusion/vladua-bufer")
+        self.folder_path_edit.setText("D:/ai-gen/riffusion/vladua-bufer")
         self.select_folder_button = QPushButton("Select Folder...")
         self.select_folder_button.setFont(QFont("Arial", 10))
         self.select_folder_button.clicked.connect(self.select_folder)
