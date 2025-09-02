@@ -38,7 +38,7 @@ if shutil.which("ffmpeg") is None:
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QProgressBar, QPushButton, QFileDialog,
                              QComboBox, QLineEdit, QFormLayout, QMessageBox,
-                             QTextEdit)
+                             QTextEdit, QCheckBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QIcon
 
@@ -90,15 +90,25 @@ def format_srt_time(seconds: float) -> str:
 def generate_srt_content(transcription_result: dict) -> str:
     """Generates SRT file content string from Whisper transcription result."""
     srt_content = ""
-    for i, segment in enumerate(transcription_result["segments"], start=1):
-        start_time_str = format_srt_time(segment['start'])
-        end_time_str = format_srt_time(segment['end'])
-        text = segment['text'].strip()
-        # Handle potential multi-line text within a segment if needed,
-        # though typically whisper provides reasonably short segments.
-        srt_content += f"{i}\n"
-        srt_content += f"{start_time_str} --> {end_time_str}\n"
-        srt_content += f"{text}\n\n"
+    segment_count = 1
+    for segment in transcription_result["segments"]:
+        if 'words' in segment:
+            for word in segment['words']:
+                start_time_str = format_srt_time(word['start'])
+                end_time_str = format_srt_time(word['end'])
+                text = word['word'].strip()
+                srt_content += f"{segment_count}\n"
+                srt_content += f"{start_time_str} --> {end_time_str}\n"
+                srt_content += f"{text}\n\n"
+                segment_count += 1
+        else: # Fallback to segment-level timestamps if word timestamps are not available
+            start_time_str = format_srt_time(segment['start'])
+            end_time_str = format_srt_time(segment['end'])
+            text = segment['text'].strip()
+            srt_content += f"{segment_count}\n"
+            srt_content += f"{start_time_str} --> {end_time_str}\n"
+            srt_content += f"{text}\n\n"
+            segment_count += 1
     return srt_content
 
 
@@ -108,11 +118,12 @@ class Worker(QThread):
     error_occurred = pyqtSignal(str)
     finished_signal = pyqtSignal()
 
-    def __init__(self, folder_path: Path, model_name: str, language: str):
+    def __init__(self, folder_path: Path, model_name: str, language: str, word_timestamps: bool):
         super().__init__()
         self.folder_path = folder_path
         self.model_name = model_name
         self.language = language if language and language.lower() != 'auto' else None # Whisper uses None for auto-detect
+        self.word_timestamps = word_timestamps
         self.temp_dir_path = TEMP_DIR_PATH
         self._is_running = True
         self.whisper_model = None # Model will be loaded in run()
@@ -198,7 +209,12 @@ class Worker(QThread):
 
                 try:
                     # --- Transcribe using Whisper library ---
-                    transcribe_options = {"language": self.language} # Add other options like fp16=False if needed
+                    transcribe_options = {
+                        "language": self.language,
+                        "word_timestamps": self.word_timestamps,
+                        "beam_size": 5,
+                        "fp16": False,
+                    } # Add other options like fp16=False if needed
                     result = self.whisper_model.transcribe(str(audio_file), **transcribe_options, verbose=False) # verbose=False suppresses console output
 
                     # --- Generate SRT Content from Result ---
@@ -269,7 +285,6 @@ class Worker(QThread):
 
 # --- Main Application Window ---
 class App(QWidget):
-    # (Constructor __init__ remains the same)
     def __init__(self):
         super().__init__()
         self.worker = None
@@ -281,8 +296,6 @@ class App(QWidget):
         icon_path = APP_BASE_DIR / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
-        else:
-             print(f"Debug: Icon not found at {icon_path}")
 
         initial_width = 750
         initial_height = 550
@@ -315,6 +328,11 @@ class App(QWidget):
         self.language_input.setPlaceholderText("e.g., 'en', 'ja', 'auto' (leave blank for auto-detect)")
         self.language_input.setText("en")
         form_layout.addRow("Language:", self.language_input)
+
+        self.word_timestamps_checkbox = QCheckBox("Enable Word Timestamps")
+        self.word_timestamps_checkbox.setChecked(True)
+        form_layout.addRow(self.word_timestamps_checkbox)
+        
         layout.addLayout(form_layout)
 
         # --- Progress Area ---
@@ -366,6 +384,7 @@ class App(QWidget):
         folder_str = self.folder_path_edit.text().strip()
         model = self.model_select.currentText()
         language = self.language_input.text().strip() or "auto" # Default to auto if empty
+        word_timestamps = self.word_timestamps_checkbox.isChecked()
 
         if not folder_str:
             QMessageBox.warning(self, "Input Error", "Please select an audio folder.")
@@ -386,11 +405,12 @@ class App(QWidget):
         self.log_message(f"Folder: {folder_path}")
         self.log_message(f"Model: {model}")
         self.log_message(f"Language: {language if language else 'auto-detect'}")
+        self.log_message(f"Word Timestamps: {word_timestamps}")
 
         self.set_controls_enabled(False)
         self.progress_label.setText("State: Initializing...") # Update state
 
-        self.worker = Worker(folder_path, model, language)
+        self.worker = Worker(folder_path, model, language, word_timestamps)
         self.worker.progress.connect(self.update_progress)
         self.worker.error_occurred.connect(self.handle_error)
         self.worker.finished_signal.connect(self.worker_finished)
@@ -440,6 +460,7 @@ class App(QWidget):
         self.folder_path_edit.setEnabled(enabled)
         self.model_select.setEnabled(enabled)
         self.language_input.setEnabled(enabled)
+        self.word_timestamps_checkbox.setEnabled(enabled)
         self.stop_button.setEnabled(not enabled)
 
     # (closeEvent remains the same)
