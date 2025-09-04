@@ -309,7 +309,7 @@ class App(QWidget):
         form_layout = QFormLayout()
         self.folder_path_edit = QLineEdit()
         self.folder_path_edit.setPlaceholderText("Select folder containing audio files")
-        self.folder_path_edit.setText("D:/ai-gen/riffusion/vladua-bufer")
+        self.folder_path_edit.setText("D:/dev/vc-clips-json")
         self.select_folder_button = QPushButton("Select Folder...")
         self.select_folder_button.setFont(QFont("Arial", 10))
         self.select_folder_button.clicked.connect(self.select_folder)
